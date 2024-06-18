@@ -1,16 +1,15 @@
 import hashlib
 import time
-import json
 import socket
 import threading
 import pickle
 
 class Block:
-    def __init__(self, index, timestamp, data):
+    def __init__(self, index, timestamp, data, prev_hash='0'):
         self.index = index
         self.timestamp = timestamp
         self.data = data
-        self.prev_hash = 0
+        self.prev_hash = prev_hash
         self.hash = self.calHash()
     
     def calHash(self):
@@ -24,12 +23,16 @@ class Block:
         return f"Block(index: {self.index}, timestamp: {self.timestamp}, data: {self.data}, prev_hash: {self.prev_hash}, hash: {self.hash})"
 
 class BlockChain:
-    def __init__(self):
+    def __init__(self, genesis_block=None):
         self.chain = []
-        self.createGenesis()
+        if genesis_block:
+            self.chain.append(genesis_block)
+        else:
+            self.createGenesis()
     
     def createGenesis(self):
-        self.chain.append(Block(0, time.time(), 'Genesis'))
+        genesis_block = Block(0, time.time(), 'Genesis')
+        self.chain.append(genesis_block)
     
     def addBlock(self, nBlock):
         nBlock.prev_hash = self.chain[-1].hash
@@ -52,12 +55,16 @@ class Peer:
         self.id = id
         self.port = port
         self.peers = {}
-        self.blockchain = BlockChain()
+        self.blockchain = None
         self.prepare_msgs = {}
         self.commit_msgs = {}
         self.view = 0
         self.total_peers = 1  # Start with 1 as this peer is already part of the network
         self.primary_id = self.view % self.total_peers
+
+        if self.id == self.primary_id:
+            self.blockchain = BlockChain()  # Only primary creates the genesis block
+
         self.server_thread = threading.Thread(target=self.run_server)
         self.server_thread.start()
     
@@ -71,11 +78,42 @@ class Peer:
             self.peers[peer_id] = peer_port
             self.total_peers += 1  # Increment the total number of peers
             self.update_primary()  # Recalculate primary node
+            self.synchronize_genesis_block(peer_id, peer_port)
             print(f"Connected to peer {peer_id} on port {peer_port}")
             sock.close()
         except Exception as e:
             print(f"Failed to connect to peer {peer_id} on port {peer_port}: {e}")
-    
+
+    def synchronize_genesis_block(self, peer_id, peer_port):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', peer_port))
+            if self.blockchain is None:
+                message = {'type': 'request_genesis'}
+                sock.send(pickle.dumps(message))
+                data = sock.recv(4096)
+                if data:
+                    genesis_block_data = pickle.loads(data)
+                    genesis_block = Block(genesis_block_data['index'],
+                                          genesis_block_data['timestamp'],
+                                          genesis_block_data['data'],
+                                          genesis_block_data['prev_hash'])
+                    self.blockchain = BlockChain(genesis_block)
+                    print(f"Synchronized genesis block from peer {peer_id}")
+            else:
+                genesis_block = self.blockchain.chain[0]
+                genesis_block_data = {
+                    'index': genesis_block.index,
+                    'timestamp': genesis_block.timestamp,
+                    'data': genesis_block.data,
+                    'prev_hash': genesis_block.prev_hash
+                }
+                message = {'type': 'send_genesis', 'genesis_block': genesis_block_data}
+                sock.send(pickle.dumps(message))
+            sock.close()
+        except Exception as e:
+            print(f"Failed to synchronize genesis block with peer {peer_id} on port {peer_port}: {e}")
+
     def run_server(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(('127.0.0.1', self.port))
@@ -91,7 +129,11 @@ class Peer:
             data = client_socket.recv(4096)
             if data:
                 message = pickle.loads(data)
-                if message['type'] == 'block':
+                if message['type'] == 'request_genesis':
+                    self.send_genesis_block(client_socket)
+                elif message['type'] == 'send_genesis':
+                    self.receive_genesis_block(message['genesis_block'])
+                elif message['type'] == 'block':
                     self.handle_propose(message['block'])
                 elif message['type'] == 'prepare':
                     self.handle_prepare(message['block'], message['peer_id'])
@@ -105,6 +147,31 @@ class Peer:
             print(f"Exception: {e}")
         finally:
             client_socket.close()
+    
+    def send_genesis_block(self, client_socket):
+        try:
+            if self.blockchain:
+                genesis_block = self.blockchain.chain[0]
+                genesis_block_data = {
+                    'index': genesis_block.index,
+                    'timestamp': genesis_block.timestamp,
+                    'data': genesis_block.data,
+                    'prev_hash': genesis_block.prev_hash
+                }
+                message = {'type': 'send_genesis', 'genesis_block': genesis_block_data}
+                client_socket.send(pickle.dumps(message))
+                print("Sent genesis block to requesting peer")
+        except Exception as e:
+            print(f"Failed to send genesis block: {e}")
+
+    def receive_genesis_block(self, genesis_block_data):
+        if self.blockchain is None:
+            genesis_block = Block(genesis_block_data['index'],
+                                  genesis_block_data['timestamp'],
+                                  genesis_block_data['data'],
+                                  genesis_block_data['prev_hash'])
+            self.blockchain = BlockChain(genesis_block)
+            print("Genesis block received and blockchain initialized")
     
     def handle_propose(self, block):
         if self.id == self.primary_id:
@@ -129,6 +196,7 @@ class Peer:
             self.commit_msgs[block.hash] = set()
         self.commit_msgs[block.hash].add(peer_id)
         if len(self.commit_msgs[block.hash]) > (len(self.peers) // 3) * 2:
+            # 모든 노드가 블록을 중복 추가하지 않도록 수정
             if not any(b.hash == block.hash for b in self.blockchain.chain):
                 self.blockchain.addBlock(block)
                 print(f"Block {block.index} added to the blockchain.")
@@ -204,12 +272,18 @@ def main():
             peer.connect_peer(peer_id, peer_port)
         elif choice == "2":
             data = input("Enter block data: ")
-            block = Block(len(peer.blockchain.chain), time.time(), data)
-            peer.propose_block(block)
-            print("--- PBFT start !! ---\n")
+            if peer.blockchain is None:
+                print("Blockchain is not initialized.")
+            else:
+                block = Block(len(peer.blockchain.chain), time.time(), data)
+                peer.propose_block(block)
+                print("--- PBFT start !! ---\n")
         elif choice == "3":
             print("Current Blockchain:")
-            print(peer.blockchain)
+            if peer.blockchain:
+                print(peer.blockchain)
+            else:
+                print("None")
         elif choice == "4":
             break
         else:
