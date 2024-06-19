@@ -211,7 +211,7 @@ class Peer:
             print(f"피어 {self.primary_id}로부터 블록 propose를 받았습니다.")
     
     def handle_prepare(self, block, peer_id):
-        print(f"준비 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
+        print(f"prepare 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
         if block.hash not in self.prepare_msgs:
             self.prepare_msgs[block.hash] = set()
         self.prepare_msgs[block.hash].add(peer_id)
@@ -219,7 +219,7 @@ class Peer:
             self.broadcast_commit(block)
     
     def handle_commit(self, block, peer_id):
-        print(f"커밋 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 커밋 메시지를 받았습니다.")
+        print(f"commit 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 commit MSG를 받았습니다.")
         if block.hash not in self.commit_msgs:
             self.commit_msgs[block.hash] = set()
         self.commit_msgs[block.hash].add(peer_id)
