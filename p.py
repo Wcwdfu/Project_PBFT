@@ -59,13 +59,15 @@ class Peer:
         self.prepare_msgs = {}
         self.commit_msgs = {}
         self.view = 0
-        self.total_peers = 1  # Start with 1 as this peer is already part of the network
+        self.total_peers = 1 
         self.primary_id = self.view % self.total_peers
+        self.server_running = True  # 서버 실행 플래그
 
         if self.id == self.primary_id:
-            self.blockchain = BlockChain()  # Only primary creates the genesis block
+            self.blockchain = BlockChain()
 
         self.server_thread = threading.Thread(target=self.run_server)
+        self.server_thread.daemon = True
         self.server_thread.start()
     
     def update_primary(self):
@@ -76,13 +78,17 @@ class Peer:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(('127.0.0.1', peer_port))
             self.peers[peer_id] = peer_port
-            self.total_peers += 1  # Increment the total number of peers
-            self.update_primary()  # Recalculate primary node
+            self.total_peers += 1
+            self.update_primary()
             self.synchronize_genesis_block(peer_id, peer_port)
-            print(f"Connected to peer {peer_id} on port {peer_port}")
+            print(f"피어 {peer_id}에 포트 {peer_port}로 연결되었습니다.")
+
+            # Send a message to the peer to connect back
+            message = {'type': 'connect_back', 'peer_id': self.id, 'peer_port': self.port}
+            sock.send(pickle.dumps(message))
             sock.close()
         except Exception as e:
-            print(f"Failed to connect to peer {peer_id} on port {peer_port}: {e}")
+            print(f"피어 {peer_id}에 포트 {peer_port}로 연결하는 데 실패했습니다: {e}")
 
     def synchronize_genesis_block(self, peer_id, peer_port):
         try:
@@ -99,7 +105,7 @@ class Peer:
                                           genesis_block_data['data'],
                                           genesis_block_data['prev_hash'])
                     self.blockchain = BlockChain(genesis_block)
-                    print(f"Synchronized genesis block from peer {peer_id}")
+                    print(f"피어 {peer_id}로부터 제네시스 블록이 동기화되었습니다.")
             else:
                 genesis_block = self.blockchain.chain[0]
                 genesis_block_data = {
@@ -112,17 +118,30 @@ class Peer:
                 sock.send(pickle.dumps(message))
             sock.close()
         except Exception as e:
-            print(f"Failed to synchronize genesis block with peer {peer_id} on port {peer_port}: {e}")
+            print(f"피어 {peer_id}에 포트 {peer_port}로 제네시스 블록을 동기화하는 데 실패했습니다: {e}")
 
     def run_server(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(('127.0.0.1', self.port))
         server.listen(5)
-        print(f"Peer {self.id} listening on port {self.port}")
-        while True:
-            client_socket, addr = server.accept()
-            print(f"Connection accepted from {addr}")
-            threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+        print(f"피어 {self.id}이(가) 포트 {self.port}에서 대기 중입니다.")
+        try:
+            while self.server_running:
+                server.settimeout(1.0)
+                try:
+                    client_socket, addr = server.accept()
+                    print(f"{addr}에서 연결이 수락되었습니다.")
+                    threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+                except socket.timeout:
+                    continue
+        except KeyboardInterrupt:
+            print(f"피어 {self.id} 서버가 종료됩니다.")
+        finally:
+            server.close()
+    
+    def stop_server(self):
+        self.server_running = False
+        self.server_thread.join()
     
     def handle_client(self, client_socket):
         try:
@@ -141,6 +160,8 @@ class Peer:
                     self.handle_commit(message['block'], message['peer_id'])
                 elif message['type'] == 'view_change':
                     self.handle_view_change(message['new_view'], message['peer_id'])
+                elif message['type'] == 'connect_back':
+                    self.handle_connect_back(message['peer_id'], message['peer_port'])
         except EOFError as e:
             print(f"EOFError: {e}")
         except Exception as e:
@@ -148,6 +169,13 @@ class Peer:
         finally:
             client_socket.close()
     
+    def handle_connect_back(self, peer_id, peer_port):
+        if peer_id not in self.peers:
+            self.peers[peer_id] = peer_port
+            self.total_peers+=1
+            self.update_primary()
+            print(f"양방향 연결 성공 아이디:{peer_id}의 포트:{peer_port} ")
+
     def send_genesis_block(self, client_socket):
         try:
             if self.blockchain:
@@ -160,9 +188,9 @@ class Peer:
                 }
                 message = {'type': 'send_genesis', 'genesis_block': genesis_block_data}
                 client_socket.send(pickle.dumps(message))
-                print("Sent genesis block to requesting peer")
+                print("제네시스 블록이 요청한 피어로 전송되었습니다.")
         except Exception as e:
-            print(f"Failed to send genesis block: {e}")
+            print(f"제네시스 블록을 전송하는 데 실패했습니다: {e}")
 
     def receive_genesis_block(self, genesis_block_data):
         if self.blockchain is None:
@@ -171,19 +199,19 @@ class Peer:
                                   genesis_block_data['data'],
                                   genesis_block_data['prev_hash'])
             self.blockchain = BlockChain(genesis_block)
-            print("Genesis block received and blockchain initialized")
+            print("제네시스 블록을 수신하여 블록체인이 초기화되었습니다.")
     
     def handle_propose(self, block):
         if self.id == self.primary_id:
-            print(f"Propose phase started for block {block.index}")
+            print(f"블록 {block.index}에 대한 propose 단계가 시작되었습니다.")
             self.prepare_msgs[block.hash] = set()
             self.commit_msgs[block.hash] = set()
             self.broadcast_prepare(block)
         else:
-            print(f"Received block proposal from peer {self.primary_id}")
+            print(f"피어 {self.primary_id}로부터 블록 propose를 받았습니다.")
     
     def handle_prepare(self, block, peer_id):
-        print(f"Prepare phase: received prepare from peer {peer_id} for block {block.index}")
+        print(f"준비 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
         if block.hash not in self.prepare_msgs:
             self.prepare_msgs[block.hash] = set()
         self.prepare_msgs[block.hash].add(peer_id)
@@ -191,24 +219,23 @@ class Peer:
             self.broadcast_commit(block)
     
     def handle_commit(self, block, peer_id):
-        print(f"Commit phase: received commit from peer {peer_id} for block {block.index}")
+        print(f"커밋 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 커밋 메시지를 받았습니다.")
         if block.hash not in self.commit_msgs:
             self.commit_msgs[block.hash] = set()
         self.commit_msgs[block.hash].add(peer_id)
         if len(self.commit_msgs[block.hash]) > (len(self.peers) // 3) * 2:
-            # 모든 노드가 블록을 중복 추가하지 않도록 수정
             if not any(b.hash == block.hash for b in self.blockchain.chain):
                 self.blockchain.addBlock(block)
-                print(f"Block {block.index} added to the blockchain.")
+                print(f"블록 {block.index}이(가) 블록체인에 추가되었습니다.")
     
     def handle_view_change(self, new_view, peer_id):
-        print(f"View change requested by peer {peer_id} to view {new_view}")
+        print(f"피어 {peer_id}가 새로운 뷰 {new_view}로 변경을 요청했습니다.")
         self.view_change_votes += 1
         if self.view_change_votes > (len(self.peers) // 3) * 2:
             self.view = new_view
-            self.update_primary()  # Recalculate primary node
+            self.update_primary()
             self.view_change_votes = 0
-            print(f"View changed to {self.view}, new primary is {self.primary_id}")
+            print(f"뷰가 {self.view}(으)로 변경되었으며, 새로운 주 노드는 {self.primary_id}입니다.")
     
     def broadcast_prepare(self, block):
         for peer_id, peer_port in self.peers.items():
@@ -218,9 +245,9 @@ class Peer:
                 message = {'type': 'prepare', 'block': block, 'peer_id': self.id}
                 sock.send(pickle.dumps(message))
                 sock.close()
-                print(f"Broadcasted prepare to peer {peer_id} for block {block.index}")
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 prepare MSG를 브로드캐스트했습니다.")
             except Exception as e:
-                print(f"Failed to send prepare to peer {peer_id} on port {peer_port}: {e}")
+                print(f"피어 {peer_id}에 포트 {peer_port}로 prepare MSG를 보내는 데 실패했습니다: {e}")
     
     def broadcast_commit(self, block):
         for peer_id, peer_port in self.peers.items():
@@ -230,17 +257,17 @@ class Peer:
                 message = {'type': 'commit', 'block': block, 'peer_id': self.id}
                 sock.send(pickle.dumps(message))
                 sock.close()
-                print(f"Broadcasted commit to peer {peer_id} for block {block.index}")
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 commit MSG를 브로드캐스트했습니다.")
             except Exception as e:
-                print(f"Failed to send commit to peer {peer_id} on port {peer_port}: {e}")
+                print(f"피어 {peer_id}에 포트 {peer_port}로 commit MSG를 보내는 데 실패했습니다: {e}")
     
     def propose_block(self, block):
         if self.id == self.primary_id:
-            print(f"Proposing block {block.index}")
+            print(f"블록 {block.index}을(를) 제안 중입니다.")
             self.broadcast_propose(block)
             self.handle_propose(block)
         else:
-            print(f"Node {self.id} is not the primary node.")
+            print(f"노드 {self.id}은(는) 주 노드가 아닙니다.")
     
     def broadcast_propose(self, block):
         for peer_id, peer_port in self.peers.items():
@@ -250,44 +277,45 @@ class Peer:
                 message = {'type': 'block', 'block': block}
                 sock.send(pickle.dumps(message))
                 sock.close()
-                print(f"Broadcasted block proposal to peer {peer_id} for block {block.index}")
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 블록 propose MSG를 브로드캐스트했습니다.")
             except Exception as e:
-                print(f"Failed to send block to peer {peer_id} on port {peer_port}: {e}")
+                print(f"피어 {peer_id}에 포트 {peer_port}로 블록 propose MSG를 보내는 데 실패했습니다: {e}")
 
 def main():
-    id = int(input("Enter your peer ID: "))
-    port = int(input("Enter your port number: "))
+    id = int(input("피어 ID를 입력하세요: "))
+    port = int(input("포트 번호를 입력하세요: "))
     peer = Peer(id, port)
 
     while True:
-        print("1. Add peer")
-        print("2. Add block")
-        print("3. Print blockchain")
-        print("4. Exit")
-        choice = input("Choose an option: ")
+        print("1. 피어 추가")
+        print("2. 블록 추가")
+        print("3. 블록체인 출력")
+        print("4. 종료")
+        choice = input("옵션을 선택하세요: ")
 
         if choice == "1":
-            peer_id = int(input("Enter peer ID to connect: "))
-            peer_port = int(input("Enter peer port number: "))
+            peer_id = int(input("연결할 피어 ID를 입력하세요: "))
+            peer_port = int(input("연결할 피어의 포트 번호를 입력하세요: "))
             peer.connect_peer(peer_id, peer_port)
         elif choice == "2":
-            data = input("Enter block data: ")
+            data = input("블록 데이터를 입력하세요: ")
             if peer.blockchain is None:
-                print("Blockchain is not initialized.")
+                print("블록체인이 초기화되지 않았습니다.")
             else:
+                print(" -----! PBFT 시작 !-----\n")
                 block = Block(len(peer.blockchain.chain), time.time(), data)
                 peer.propose_block(block)
-                print("--- PBFT start !! ---\n")
         elif choice == "3":
-            print("Current Blockchain:")
+            print("현재 블록체인:")
             if peer.blockchain:
                 print(peer.blockchain)
             else:
-                print("None")
+                print("없음")
         elif choice == "4":
+            peer.stop_server()
             break
         else:
-            print("Invalid option. Please try again.")
+            print("잘못된 옵션입니다. 다시 시도하세요.")
 
 if __name__ == "__main__":
     main()
