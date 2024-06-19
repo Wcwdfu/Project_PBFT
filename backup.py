@@ -56,7 +56,6 @@ class Peer:
         self.port = port
         self.peers = {}
         self.blockchain = None
-        self.preprepare_msgs = {}
         self.prepare_msgs = {}
         self.commit_msgs = {}
         self.view = 0
@@ -153,12 +152,12 @@ class Peer:
                     self.send_genesis_block(client_socket)
                 elif message['type'] == 'send_genesis':
                     self.receive_genesis_block(message['genesis_block'])
-                elif message['type'] == 'preprepare':
-                    self.handle_preprepare(message['block'], message['view'])
+                elif message['type'] == 'block':
+                    self.handle_propose(message['block'])
                 elif message['type'] == 'prepare':
-                    self.handle_prepare(message['block'], message['view'], message['peer_id'])
+                    self.handle_prepare(message['block'], message['peer_id'])
                 elif message['type'] == 'commit':
-                    self.handle_commit(message['block'], message['view'], message['peer_id'])
+                    self.handle_commit(message['block'], message['peer_id'])
                 elif message['type'] == 'view_change':
                     self.handle_view_change(message['new_view'], message['peer_id'])
                 elif message['type'] == 'connect_back':
@@ -202,25 +201,29 @@ class Peer:
             self.blockchain = BlockChain(genesis_block)
             print("제네시스 블록을 수신하여 블록체인이 초기화되었습니다.")
     
-    def handle_preprepare(self, block, view):
-        print(f"preprepare 단계: view {view}에서 블록 {block.index}을(를) 받았습니다.")
-        self.preprepare_msgs[block.hash] = block
-        self.broadcast_prepare(block, view)
-
-    def handle_prepare(self, block, view, peer_id):
-        print(f"prepare 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
+    def handle_propose(self, block):
+        if self.id == self.primary_id:
+            print(f"블록 {block.index}에 대한 propose 단계가 시작되었습니다.")
+            self.prepare_msgs[block.hash] = set()
+            self.commit_msgs[block.hash] = set()
+            self.broadcast_prepare(block)
+        else:
+            print(f"피어 {self.primary_id}로부터 블록 propose를 받았습니다.")
+    
+    def handle_prepare(self, block, peer_id):
+        print(f"prepare 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
         if block.hash not in self.prepare_msgs:
             self.prepare_msgs[block.hash] = set()
         self.prepare_msgs[block.hash].add(peer_id)
-        if len(self.prepare_msgs[block.hash]) >= (self.total_peers // 3) * 2:
-            self.broadcast_commit(block, view)
-
-    def handle_commit(self, block, view, peer_id):
-        print(f"commit 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 commit MSG를 받았습니다.")
+        if len(self.prepare_msgs[block.hash]) >= (len(self.peers) // 3) * 2 + 1:
+            self.broadcast_commit(block)
+    
+    def handle_commit(self, block, peer_id):
+        print(f"commit 단계: 피어 {peer_id}로부터 블록 {block.index}에 대한 commit MSG를 받았습니다.")
         if block.hash not in self.commit_msgs:
             self.commit_msgs[block.hash] = set()
         self.commit_msgs[block.hash].add(peer_id)
-        if len(self.commit_msgs[block.hash]) >= (self.total_peers // 3) * 2 + 1:
+        if len(self.commit_msgs[block.hash]) >= (len(self.peers) // 3) * 2 + 1:
             if not any(b.hash == block.hash for b in self.blockchain.chain):
                 self.blockchain.addBlock(block)
                 print(f"블록 {block.index}이(가) 블록체인에 추가되었습니다.")
@@ -228,40 +231,55 @@ class Peer:
     def handle_view_change(self, new_view, peer_id):
         print(f"피어 {peer_id}가 새로운 뷰 {new_view}로 변경을 요청했습니다.")
         self.view_change_votes += 1
-        if self.view_change_votes > (self.total_peers // 3) * 2:
+        if self.view_change_votes > (len(self.peers) // 3) * 2:
             self.view = new_view
             self.update_primary()
             self.view_change_votes = 0
             print(f"뷰가 {self.view}(으)로 변경되었으며, 새로운 주 노드는 {self.primary_id}입니다.")
     
-    def broadcast_preprepare(self, block):
-        message = {'type': 'preprepare', 'block': block, 'view': self.view}
-        self.broadcast_message(message)
-    
-    def broadcast_prepare(self, block, view):
-        message = {'type': 'prepare', 'block': block, 'view': view, 'peer_id': self.id}
-        self.broadcast_message(message)
-    
-    def broadcast_commit(self, block, view):
-        message = {'type': 'commit', 'block': block, 'view': view, 'peer_id': self.id}
-        self.broadcast_message(message)
-
-    def broadcast_message(self, message):
+    def broadcast_prepare(self, block):
         for peer_id, peer_port in self.peers.items():
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.connect(('127.0.0.1', peer_port))
+                message = {'type': 'prepare', 'block': block, 'peer_id': self.id}
                 sock.send(pickle.dumps(message))
                 sock.close()
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 prepare MSG를 전송했습니다.")
             except Exception as e:
-                print(f"피어 {peer_id}에 메시지를 보내는 데 실패했습니다: {e}")
-
+                print(f"피어 {peer_id}에 포트 {peer_port}로 prepare MSG를 보내는 데 실패했습니다: {e}")
+    
+    def broadcast_commit(self, block):
+        for peer_id, peer_port in self.peers.items():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(('127.0.0.1', peer_port))
+                message = {'type': 'commit', 'block': block, 'peer_id': self.id}
+                sock.send(pickle.dumps(message))
+                sock.close()
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 commit MSG를 전송했습니다.")
+            except Exception as e:
+                print(f"피어 {peer_id}에 포트 {peer_port}로 commit MSG를 보내는 데 실패했습니다: {e}")
+    
     def propose_block(self, block):
         if self.id == self.primary_id:
             print(f"블록 {block.index}을(를) 제안 중입니다.")
-            self.broadcast_preprepare(block)
+            self.broadcast_propose(block)
+            self.handle_propose(block)
         else:
             print(f"노드 {self.id}은(는) 주 노드가 아닙니다.")
+    
+    def broadcast_propose(self, block):
+        for peer_id, peer_port in self.peers.items():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(('127.0.0.1', peer_port))
+                message = {'type': 'block', 'block': block}
+                sock.send(pickle.dumps(message))
+                sock.close()
+                print(f"피어 {peer_id}에 블록 {block.index}에 대한 블록 propose MSG를 전송했습니다.")
+            except Exception as e:
+                print(f"피어 {peer_id}에 포트 {peer_port}로 블록 propose MSG를 보내는 데 실패했습니다: {e}")
 
 def main():
     id = int(input("피어 ID를 입력하세요: "))
