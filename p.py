@@ -59,6 +59,7 @@ class Peer:
         self.preprepare_msgs = {}
         self.prepare_msgs = {}
         self.commit_msgs = {}
+        self.committed_blocks = set()  # 추가된 블록을 추적하기 위한 집합
         self.view = 0
         self.total_peers = 1 
         self.primary_id = self.view % self.total_peers
@@ -173,7 +174,7 @@ class Peer:
     def handle_connect_back(self, peer_id, peer_port):
         if peer_id not in self.peers:
             self.peers[peer_id] = peer_port
-            self.total_peers+=1
+            self.total_peers += 1
             self.update_primary()
             print(f"양방향 연결 성공 아이디:{peer_id}의 포트:{peer_port} ")
 
@@ -203,11 +204,15 @@ class Peer:
             print("제네시스 블록을 수신하여 블록체인이 초기화되었습니다.")
     
     def handle_preprepare(self, block, view):
+        if block.hash in self.committed_blocks:
+            return  # 이미 처리된 블록이면 무시
         print(f"preprepare 단계: view {view}에서 블록 {block.index}을(를) 받았습니다.")
         self.preprepare_msgs[block.hash] = block
         self.broadcast_prepare(block, view)
 
     def handle_prepare(self, block, view, peer_id):
+        if block.hash in self.committed_blocks:
+            return  # 이미 처리된 블록이면 무시
         print(f"prepare 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
         if block.hash not in self.prepare_msgs:
             self.prepare_msgs[block.hash] = set()
@@ -216,6 +221,8 @@ class Peer:
             self.broadcast_commit(block, view)
 
     def handle_commit(self, block, view, peer_id):
+        if block.hash in self.committed_blocks:
+            return  # 이미 처리된 블록이면 무시
         print(f"commit 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 commit MSG를 받았습니다.")
         if block.hash not in self.commit_msgs:
             self.commit_msgs[block.hash] = set()
@@ -224,7 +231,10 @@ class Peer:
             if not any(b.hash == block.hash for b in self.blockchain.chain):
                 self.blockchain.addBlock(block)
                 print(f"블록 {block.index}이(가) 블록체인에 추가되었습니다.")
-    
+            self.committed_blocks.add(block.hash)  # 블록을 추가 후 committed 상태로 표시
+            # 추가된 후에는 commit 메시지를 더 이상 처리하지 않음
+            self.commit_msgs[block.hash].add(self.id)
+
     def handle_view_change(self, new_view, peer_id):
         print(f"피어 {peer_id}가 새로운 뷰 {new_view}로 변경을 요청했습니다.")
         self.view_change_votes += 1
