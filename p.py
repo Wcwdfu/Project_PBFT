@@ -64,6 +64,7 @@ class Peer:
         self.total_peers = 1 
         self.primary_id = self.view % self.total_peers
         self.server_running = True  # 서버 실행 플래그
+        self.is_byzantine = False  # 비잔틴 노드 플래그
 
         if self.id == self.primary_id:
             self.blockchain = BlockChain()
@@ -206,6 +207,9 @@ class Peer:
     def handle_preprepare(self, block, view):
         if block.hash in self.committed_blocks:
             return  # 이미 처리된 블록이면 무시
+        if self.is_byzantine:
+            print(f"비잔틴 노드 {self.id}이(가) preprepare MSG를 받고 아무 일도 하지 않습니다.")
+            return  # 비잔틴 노드는 아무 일도 하지 않음
         print(f"preprepare 단계: view {view}에서 블록 {block.index}을(를) 받았습니다.")
         self.preprepare_msgs[block.hash] = block
         self.broadcast_prepare(block, view)
@@ -235,15 +239,6 @@ class Peer:
             # 추가된 후에는 commit 메시지를 더 이상 처리하지 않음
             self.commit_msgs[block.hash].add(self.id)
 
-    def handle_view_change(self, new_view, peer_id):
-        print(f"피어 {peer_id}가 새로운 뷰 {new_view}로 변경을 요청했습니다.")
-        self.view_change_votes += 1
-        if self.view_change_votes > (self.total_peers // 3) * 2:
-            self.view = new_view
-            self.update_primary()
-            self.view_change_votes = 0
-            print(f"뷰가 {self.view}(으)로 변경되었으며, 새로운 주 노드는 {self.primary_id}입니다.")
-    
     def broadcast_preprepare(self, block):
         message = {'type': 'preprepare', 'block': block, 'view': self.view}
         self.broadcast_message(message)
@@ -283,6 +278,7 @@ def main():
         print("2. 블록 추가")
         print("3. 블록체인 출력")
         print("4. 종료")
+        print("5. 비잔틴 노드 설정")
         choice = input("옵션을 선택하세요: ")
 
         if choice == "1":
@@ -306,6 +302,10 @@ def main():
         elif choice == "4":
             peer.stop_server()
             break
+        elif choice == "5":
+            peer.is_byzantine = not peer.is_byzantine
+            status = "활성화" if peer.is_byzantine else "비활성화"
+            print(f"비잔틴 노드 상태: {status}")
         else:
             print("잘못된 옵션입니다. 다시 시도하세요.")
 
