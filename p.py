@@ -60,6 +60,7 @@ class Peer:
         self.prepare_msgs = {}
         self.commit_msgs = {}
         self.committed_blocks = set()  # 추가된 블록을 추적하기 위한 집합
+        self.commitflag = False
         self.view = 0
         self.total_peers = 1 
         self.primary_id = self.view % self.total_peers
@@ -205,39 +206,52 @@ class Peer:
             print("제네시스 블록을 수신하여 블록체인이 초기화되었습니다.")
     
     def handle_preprepare(self, block, view):
-        if block.hash in self.committed_blocks:
+        if block.timestamp in self.committed_blocks:
             return  # 이미 처리된 블록이면 무시
         if self.is_byzantine:
             print(f"비잔틴 노드 {self.id}이(가) preprepare MSG를 받고 아무 일도 하지 않습니다.")
             return  # 비잔틴 노드는 아무 일도 하지 않음
         print(f"preprepare 단계: view {view}에서 블록 {block.index}을(를) 받았습니다.")
-        self.preprepare_msgs[block.hash] = block
+        self.preprepare_msgs[block.timestamp] = block
         self.broadcast_prepare(block, view)
+        self.commitflag = False
+        
 
     def handle_prepare(self, block, view, peer_id):
-        if block.hash in self.committed_blocks:
+        if block.timestamp in self.committed_blocks:
             return  # 이미 처리된 블록이면 무시
+        if self.is_byzantine:
+            print(f"비잔틴 노드 {self.id}이(가) prepare MSG를 받고 아무 일도 하지 않습니다.")
+            return  # 비잔틴 노드는 아무 일도 하지 않음
         print(f"prepare 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 prepare MSG를 받았습니다.")
-        if block.hash not in self.prepare_msgs:
-            self.prepare_msgs[block.hash] = set()
-        self.prepare_msgs[block.hash].add(peer_id)
-        if len(self.prepare_msgs[block.hash]) >= (self.total_peers // 3) * 2:
+        if block.timestamp not in self.prepare_msgs:
+            self.prepare_msgs[block.timestamp] = set()
+        self.prepare_msgs[block.timestamp].add(peer_id)
+        if len(self.prepare_msgs[block.timestamp]) >= (self.total_peers // 3) * 2 - 1:
             self.broadcast_commit(block, view)
+            
 
     def handle_commit(self, block, view, peer_id):
-        if block.hash in self.committed_blocks:
+        if block.timestamp in self.committed_blocks:
             return  # 이미 처리된 블록이면 무시
+        if self.is_byzantine:
+            print(f"비잔틴 노드 {self.id}이(가) commit MSG를 받고 아무 일도 하지 않습니다.")
+            return  # 비잔틴 노드는 아무 일도 하지 않음
         print(f"commit 단계: view {view}에서 피어 {peer_id}로부터 블록 {block.index}에 대한 commit MSG를 받았습니다.")
-        if block.hash not in self.commit_msgs:
-            self.commit_msgs[block.hash] = set()
-        self.commit_msgs[block.hash].add(peer_id)
-        if len(self.commit_msgs[block.hash]) >= (self.total_peers // 3) * 2 + 1:
-            if not any(b.hash == block.hash for b in self.blockchain.chain):
+        if block.timestamp not in self.commit_msgs:
+            self.commit_msgs[block.timestamp] = set()
+        self.commit_msgs[block.timestamp].add(peer_id)
+        if len(self.commit_msgs[block.timestamp]) >= (self.total_peers // 3) * 2 + 1:
+            print(self.commit_msgs[block.timestamp])
+            if not any(b.timestamp == block.timestamp for b in self.blockchain.chain):
                 self.blockchain.addBlock(block)
                 print(f"블록 {block.index}이(가) 블록체인에 추가되었습니다.")
-            self.committed_blocks.add(block.hash)  # 블록을 추가 후 committed 상태로 표시
+            self.committed_blocks.add(block.timestamp)  # 블록을 추가 후 committed 상태로 표시
             # 추가된 후에는 commit 메시지를 더 이상 처리하지 않음
-            self.commit_msgs[block.hash].add(self.id)
+            self.commit_msgs[block.timestamp].add(self.id)
+
+            
+            
 
     def broadcast_preprepare(self, block):
         message = {'type': 'preprepare', 'block': block, 'view': self.view}
@@ -306,6 +320,11 @@ def main():
             peer.is_byzantine = not peer.is_byzantine
             status = "활성화" if peer.is_byzantine else "비활성화"
             print(f"비잔틴 노드 상태: {status}")
+        elif choice == "6":
+            for i in peer.peers:
+                print(i)
+                print("\n")
+            
         else:
             print("잘못된 옵션입니다. 다시 시도하세요.")
 
